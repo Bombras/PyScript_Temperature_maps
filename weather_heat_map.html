@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PyScript</title>
+    <link rel="stylesheet" href="https://pyscript.net/alpha/pyscript.css" />
+    <script defer src="https://pyscript.net/alpha/pyscript.js"></script>
+</head>
+<body>
+    <py-env>
+        - pandas
+    </py-env>
+    <h1>PyScript - images from API<br>
+    https://www.in-pocasi.cz/archiv/teplotni-mapy/</h1>
+    <py-script>
+        from pathlib import Path
+        import os.path
+        from pyodide import JsException, create_proxy
+        from pyodide.http import pyfetch, FetchResponse
+        import datetime
+        import asyncio
+        import base64
+        import pandas as pd
+
+        #### define urls
+        #define date range for maps
+        start = datetime.datetime.today() - datetime.timedelta(days=10)
+        end = datetime.datetime.today() + datetime.timedelta(days=1)
+        urls = pd.date_range(
+            start=start.strftime('%Y-%m-%d'),
+            end=end.strftime('%Y-%m-%d')).to_frame(index=False, name="date")
+        urls['key'] = 0
+        # each day has two snapshots, temperatures at 7:00 and 15:00
+        url_hours = pd.DataFrame({"hours": [7, 15], "key": [0, 0]})
+        urls = urls.merge(url_hours, on='key', how='outer')
+        urls["hours"] = pd.to_timedelta(urls["hours"], unit="h")
+        urls["date"] = urls["date"] + urls["hours"]
+        # urls = urls[urls["date"] < datetime.datetime.now()] # here uncoment!!! just for testing try/exception on response, filtering dataset at the end for NaNs
+        # strftime - hours without leading zeros, on Windows use "#"" on Linux use "-"
+        urls["date_format"] = urls["date"].dt.strftime('%Y_%m_%d__%H').str.replace("__0", "_").str.replace("__","_") # https://stackoverflow.com/questions/904928/python-strftime-date-without-leading-0
+        urls["url"] = "https://www.in-pocasi.cz/archiv/teplotni-mapy/" + urls['date'].dt.strftime("%Y") + "/" + urls["date_format"] + "_teploty.png"
+        urls["image_data"] = None
+        urls = urls.reset_index()
+
+        #### define functions for download from urls
+        async def download(url):
+            filename = Path(url).name
+            response = await pyfetch(url)
+            if response.status == 200:
+                status = response.status
+                with open(filename, mode="wb") as file:
+                    file.write(await response.bytes())
+                return filename, status
+            else:
+                status = response.status
+                filename = None
+                return filename, status
+
+        async def process_response(url):
+            response_content = await loop.run_until_complete(
+                download(url)
+                )
+            if response_content[1] == 200:
+                data = base64.b64encode(open(response_content[0], "rb").read()).decode("utf-8")
+                src = f"data:image/png;base64,{data}"
+                return src
+            else:
+                src = None
+                return src
+        
+        # for testing 
+        # urls = urls.head(2)
+        
+        maps = []
+        for index, row in urls.iterrows():
+            maps.append(await process_response(row["url"]))
+        urls['image_data'] = maps
+        urls = urls.dropna()
+
+        slider_min = 1
+        slider_max = len(urls)
+       
+        # set up the slider values according to maps in urls
+        document.getElementById("myRange").setAttribute("min", slider_min)
+        document.getElementById("myRange").setAttribute("max", slider_max)
+        document.getElementById("myRange").setAttribute("value", slider_max)
+           
+        # add map date info
+        def _select_map_date(number_from_slider):
+            map_date_number = int(document.querySelector("#myRange").value)
+            map_date = str("Date: " + str(urls['date'][map_date_number-1]))
+            PyScript.write("date_element", map_date, append=False)
+            _select_map()
+
+        def _select_map():
+            map_number = int(document.querySelector("#myRange").value)
+            document.querySelector("img").setAttribute("src", urls['image_data'][map_number-1]) 
+
+        # add reactivity on slider input
+        select_map_date = create_proxy(_select_map_date)
+        document.querySelector("#myRange").addEventListener("input", select_map_date)
+        
+        # set default map
+        _select_map_date(slider_max-1)
+
+    </py-script>
+    <p id="date_element" style="font-size:160%;">Placeholder</p>
+    <div class="map">
+        <img id ="img" src="src">
+    </div>
+    <div class="slidecontainer" style = "center">
+        <input type="range" min="min" max="max" value="value" class="slider" id="myRange">
+    </div>
+    <style>
+    .map {
+        max-width: 70%;
+        margin: auto;
+        }
+
+    .slidecontainer {
+        width: 70%; /* Width of the outside container */
+        margin: auto;
+        }
+    
+    .slider {
+        -webkit-appearance: none;
+        width: 100%;
+        height: 15px;
+        border-radius: 5px;  
+        background: #d3d3d3;
+        outline: none;
+        opacity: 0.9;
+        -webkit-transition: .2s;
+        transition: opacity .2s;
+        margin: auto;
+        }
+    </style>
+</body>
+</html>
